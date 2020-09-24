@@ -1,4 +1,3 @@
-# Dockerfile for building PyKaldi image from Ubuntu 16.04 image
 FROM ubuntu:18.04
 LABEL maintainer="irebai@linagora.com"
 

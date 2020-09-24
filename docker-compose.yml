@@ -1,0 +1,15 @@
+version: '3.2'
+
+services:
+
+  stt-worker-streaming:
+    container_name: stt-standalone-worker-streaming
+    build: .
+    image: lintoai/linto-platform-stt-standalone-worker-streaming:latest
+    volumes:
+      - ${AM_PATH}:/opt/models/AM
+      - ${LM_PATH}:/opt/models/LM
+    ports:
+      - target: 80
+        published: 8888
+    env_file: .env

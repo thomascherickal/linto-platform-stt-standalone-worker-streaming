@@ -22,9 +22,8 @@ RUN git clone --depth 1 https://github.com/kaldi-asr/kaldi.git /opt/kaldi && \
     cd /opt/kaldi/src && \
     ./configure --shared && \
     make depend -j $(nproc) && \
-    make -j $(nproc)
-
-RUN mkdir -p /opt/kaldi/src_ && \
+    make -j $(nproc) && \
+    mkdir -p /opt/kaldi/src_ && \
     mv       /opt/kaldi/src/base \
              /opt/kaldi/src/chain \
              /opt/kaldi/src/cudamatrix \

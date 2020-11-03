@@ -8,7 +8,6 @@ from vosk import Model, KaldiRecognizer
 # Speaker Diarization
 from pyBK.diarizationFunctions import *
 import librosa
-import time
 import webrtcvad
 ##############
 
@@ -18,6 +17,7 @@ import logging
 import os
 import re
 import json
+import uuid
 import numpy as np
 ##############
 
@@ -31,13 +31,19 @@ class WorkerStreaming:
         # Main parameters
         self.AM_PATH = '/opt/models/AM'
         self.LM_PATH = '/opt/models/LM'
+        self.TEMP_FILE_PATH = '/opt/tmp'
         self.CONFIG_FILES_PATH = '/opt/config'
         self.SERVICE_PORT = 80
         self.NBR_THREADS = 100
         self.METADATA = True
+        self.ONLINE = True
+        self.STREAM = b''
 
         if not os.path.isdir(self.CONFIG_FILES_PATH):
             os.mkdir(self.CONFIG_FILES_PATH)
+
+        if not os.path.isdir(self.TEMP_FILE_PATH):
+            os.mkdir(self.TEMP_FILE_PATH)
 
         # Environment parameters
         if 'NBR_THREADS' in os.environ:
@@ -82,9 +88,6 @@ class WorkerStreaming:
                     "--max-active="+decoder_settings.get('decoder_params', 'max_active')+"\n")
                 f.write("--frame-subsampling-factor="+decoder_settings.get(
                     'decoder_params', 'frame_subsampling_factor')+"\n")
-                f.write("--endpoint.rule2.min-trailing-silence=0.5\n")
-                f.write("--endpoint.rule3.min-trailing-silence=1.0\n")
-                f.write("--endpoint.rule4.min-trailing-silence=2.0\n")
 
         # Prepare "ivector_extractor.conf"
         with open(self.AM_PATH+"/conf/ivector_extractor.conf") as f:
@@ -128,107 +131,57 @@ class WorkerStreaming:
                         else:
                             f.write(id+" nonword\n")
 
+    # remove extra symbols
+    def parse_text(self, text):
+        text = re.sub(r"<unk>", "", text)  # remove <unk> symbol
+        text = re.sub(r"#nonterm:[^ ]* ", "", text)  # remove entity's mark
+        text = re.sub(r"' ", "'", text)  # remove space after quote '
+        text = re.sub(r" +", " ", text)  # remove multiple spaces
+        text = text.strip()
+        return text
+
     # TODO: metadata (timestamps, speakers, save audio)
     #       return at the end of streaming a json object including word-data, speaker-data
     #       (get frames after the end of decoding)
-    def process_metadata(self, metadata, nbrSpk=10):
-        if metadata is not None and 'words' in metadata and 'features' in metadata:
-            features = metadata['features']
-            seg = metadata['segments'] if metadata['segments'] is not None else []
-            feats = np.array(features)
-            feats = np.squeeze(feats)
-            mask = np.ones(shape=(feats.shape[0],))
+    def process_metadata(self, metadata, audio):
+        try:
+            if metadata is not None and 'words' in metadata:
 
-            for pos in seg:
-                mask[pos-30:pos]=0
+                #Save streaming (this not optimal)
+                filename = str(uuid.uuid4())
+                file_path = self.TEMP_FILE_PATH+"/"+filename+".wav"
+                with open(file_path, "wb") as file:
+                    file.write(audio)
 
-            spk = SpeakerDiarization()
-            spk.set_maxNrSpeakers(nbrSpk)
-            spkrs = spk.run(feats,mask)
+                #Perform speaker diarization (based on PyBK toolkit)
+                spk = SpeakerDiarization()
+                spkrs = spk.run(file_path)
 
-            speaker = []
-            i = 0
-            text = ""
-            for word in metadata['words']:
-                if i+1 < len(spkrs) and word["end"] < spkrs[i+1][0]:
-                    text += word["word"]  + " "
-                else:
-                    speaker.append({'spk'+str(int(spkrs[i][2])) : text})
-                    i+=1
-                    text=""
-            speaker.append({'spk'+str(int(spkrs[i][2])) : text})
-            
-            metadata["speakers"]=speaker
+                #Remove the audio file
+                os.remove(file_path)
 
-            # vad = metadata['silweights']
-            # weights = np.zeros(shape=(vad[len(vad)-2]+1,))
-            # id = []
-            # w = []
-            # for i in range(0, len(vad), 2):
-            #     id.append(vad[i])
-            #     w.append(vad[i+1])
-            #     weights[vad[i]] = vad[i+1]
-            # self.log.info(id)
-            # self.log.info(w)
-            # self.log.info(weights)
+                #Prepare response
+                speaker = []
+                i = 0
+                text = ""
+                for word in metadata['words']:
+                    if i+1 < len(spkrs) and word["end"] < spkrs[i+1][0]:
+                        text += word["word"] + " "
+                    else:
+                        speaker.append({'spk'+str(int(spkrs[i][2])): self.parse_text(text)})
+                        i += 1
+                        text = ""
+                speaker.append({'spk'+str(int(spkrs[i][2])): self.parse_text(text)})
 
-            del metadata['features']
-            del metadata['segments']
+                metadata["speakers"] = speaker
+                metadata["text"] = self.parse_text(metadata["text"])
 
-            return json.dumps(metadata)
-        else:
+                return json.dumps(metadata)
+            else:
+                return json.dumps({'speakers': [], 'text': '', 'words': []})
+        except Exception as e:
+            self.log.error(e)
             return json.dumps({'speakers': [], 'text': '', 'words': []})
-
-#    def process_metadata_conversation_manager(self, metadata):
-#        features = metadata['features']
-#        seg = metadata['segments'] if metadata['segments'] is not None else []
-#        feats = np.array(features)
-#        feats = np.squeeze(feats)        
-#        mask = np.ones(shape=(feats.shape[0],))
-#
-#        for pos in seg:
-#            mask[pos-30:pos]=0
-#
-#        spk = SpeakerDiarization()
-#        spk.set_maxNrSpeakers(10)
-#        spkrs = spk.run(feats,mask)
-#
-#        speakers = []
-#        text = []
-#        i = 0
-#        text_ = ""
-#        words=[]
-#        if 'words' in metadata:
-#            for word in metadata['words']:
-#                if i+1 < len(spkrs) and word["end"] < spkrs[i+1][0]:
-#                    text_ += word["word"]  + " "
-#                    words.append(word)
-#                else:
-#                    speaker = {}
-#                    speaker["btime"]=words[0]["start"]
-#                    speaker["etime"]=words[len(words)-1]["end"]
-#                    speaker["speaker_id"]='spk'+str(int(spkrs[i][2]))
-#                    speaker["words"]=words
-#
-#                    text.append('spk'+str(int(spkrs[i][2]))+' : '+text_)
-#                    speakers.append(speaker)
-#
-#                    words=[]
-#                    text_=""
-#                    i+=1
-#
-#            speaker = {}
-#            speaker["btime"]=words[0]["start"]
-#            speaker["etime"]=words[len(words)-1]["end"]
-#            speaker["speaker_id"]='spk'+str(int(spkrs[i][2]))
-#            speaker["words"]=words
-#
-#            text.append('spk'+str(int(spkrs[i][2]))+' : '+text_)
-#            speakers.append(speaker)
-#            return json.dumps({'speakers': speakers, 'text': text})
-#        else:
-#            return json.dumps({'speakers': [], 'text': '', 'words': []})
-
 
 class SpeakerDiarization:
     def __init__(self):
@@ -238,10 +191,8 @@ class SpeakerDiarization:
        # MFCC FEATURES PARAMETERS
         self.frame_length_s = 0.025
         self.frame_shift_s = 0.01
-        self.num_bins = 40
-        self.num_ceps = 40
-        self.low_freq = 40
-        self.high_freq = -200
+        self.num_bins = 30
+        self.num_ceps = 30
         #####
 
         # Segment
@@ -284,7 +235,7 @@ class SpeakerDiarization:
         self.bestClusteringCriterion = 'elbow'
         self.sigma = 1  # Spectral clustering parameters, employed if bestClusteringCriterion == spectral
         self.percentile = 40
-        self.maxNrSpeakers = 16  # If known, max nr of speakers in a sesssion in the database. This is to limit the effect of changes in very small meaningless eigenvalues values generating huge eigengaps
+        self.maxNrSpeakers = 10  # If known, max nr of speakers in a sesssion in the database. This is to limit the effect of changes in very small meaningless eigenvalues values generating huge eigengaps
         ######
 
         # RESEGMENTATION
@@ -294,10 +245,56 @@ class SpeakerDiarization:
         self.smoothWin = 100  # Size of the likelihood smoothing window in nb of frames
         ######
 
-    def set_maxNrSpeakers(self, nbr):
-        self.maxNrSpeakers = nbr
+    def compute_feat_Librosa(self, audioFile):
+        try:
+            self.data, self.sr = librosa.load(audioFile, sr=None)
+            frame_length_inSample = self.frame_length_s * self.sr
+            hop = int(self.frame_shift_s * self.sr)
+            NFFT = int(2**np.ceil(np.log2(frame_length_inSample)))
+            if self.sr >= 16000:
+                mfccNumpy = librosa.feature.mfcc(y=self.data,
+                                                 sr=self.sr,
+                                                 dct_type=2,
+                                                 n_mfcc=self.num_ceps,
+                                                 n_mels=self.num_bins,
+                                                 n_fft=NFFT,
+                                                 hop_length=hop,
+                                                 fmin=20,
+                                                 fmax=7600).T
+            else:
+                mfccNumpy = librosa.feature.mfcc(y=self.data,
+                                                 sr=self.sr,
+                                                 dct_type=2,
+                                                 n_mfcc=self.num_ceps,
+                                                 n_mels=self.num_bins,
+                                                 n_fft=NFFT,
+                                                 hop_length=hop).T
 
-    def run(self, feats, mask):
+        except Exception as e:
+            self.log.error(e)
+            raise ValueError(
+                "Speaker diarization failed when extracting features!!!")
+        else:
+            return mfccNumpy
+
+    def computeVAD_WEBRTC(self, data, sr, nFeatures):
+        try:
+            va_framed = py_webrtcvad(
+                data, fs=sr, fs_vad=sr, hoplength=30, vad_mode=0)
+            segments = get_py_webrtcvad_segments(va_framed, sr)
+            maskSAD = np.zeros([1, nFeatures])
+            for seg in segments:
+                start = int(np.round(seg[0]/self.frame_shift_s))
+                end = int(np.round(seg[1]/self.frame_shift_s))
+                maskSAD[0][start:end] = 1
+        except Exception as e:
+            self.log.error(e)
+            raise ValueError(
+                "Speaker diarization failed while voice activity detection!!!")
+        else:
+            return maskSAD
+
+    def run(self, audioFile):
         try:
             def getSegments(frameshift, finalSegmentTable, finalClusteringTable, dur):
                 numberOfSpeechFeatures = finalSegmentTable[-1, 2].astype(int)+1
@@ -331,8 +328,7 @@ class SpeakerDiarization:
                 seg[0][0] = 0.0
                 return seg
 
-            start_time = time.time()
-
+            feats = self.compute_feat_Librosa(audioFile)
             nFeatures = feats.shape[0]
             duration = nFeatures * self.frame_shift_s
 
@@ -340,9 +336,9 @@ class SpeakerDiarization:
                 return [[0, duration, 1],
                         [duration, -1, -1]]
 
-            maskSAD = mask
+            maskSAD = self.computeVAD_WEBRTC(self.data, self.sr, nFeatures)
             maskUEM = np.ones([1, nFeatures])
-            
+
             mask = np.logical_and(maskUEM, maskSAD)
             mask = mask[0][0:nFeatures]
             nSpeechFeatures = np.sum(mask)
@@ -412,15 +408,16 @@ class SpeakerDiarization:
                 seg = getSegments(self.frame_shift_s, finalSegmentTable, np.squeeze(
                     finalClusteringTableResegmentation), duration)
             else:
-                return None
+                return [[0, duration, 1],
+                        [duration, -1, -1]]
 
-            self.log.info("Speaker Diarization time in seconds: %s" % (time.time() - start_time))
         except ValueError as v:
-            self.log.info(v)
+            self.log.error(v)
             return [[0, duration, 1],
                     [duration, -1, -1]]
         except Exception as e:
             self.log.error(e)
-            return None
+            return [[0, duration, 1],
+                    [duration, -1, -1]]
         else:
             return seg

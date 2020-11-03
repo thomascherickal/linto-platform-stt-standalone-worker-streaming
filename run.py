@@ -14,6 +14,7 @@ worker = WorkerStreaming()
 # Load ASR models (acoustic model and decoding graph)
 worker.log.info('Load acoustic model and decoding graph')
 model = Model(worker.AM_PATH, worker.LM_PATH, worker.CONFIG_FILES_PATH+"/online.conf")
+spkModel = None
 
 # decode chunk audio
 def process_chunk(rec, message):
@@ -29,9 +30,9 @@ def process_chunk(rec, message):
 async def recognize(websocket, path):
     rec = None
     audio = b''
-    nbrSpk = 10
     sample_rate = model.GetSampleFrequecy() # get default sample frequency
     metadata = worker.METADATA
+
     while True:
         try:
             data = await websocket.recv()
@@ -43,13 +44,11 @@ async def recognize(websocket, path):
                     sample_rate = float(jobj['sample_rate'])
                 if 'metadata' in jobj:
                     metadata = bool(jobj['metadata'])
-                if 'nbrSpeakers' in jobj:
-                    nbrSpk = bool(jobj['nbrSpeakers'])
                 continue
 
             # Create the recognizer, word list is temporary disabled since not every model supports it
             if not rec:
-                rec = KaldiRecognizer(model, sample_rate, metadata)
+                rec = KaldiRecognizer(model, spkModel, sample_rate, worker.ONLINE)
 
             if not isinstance(data, str):
                 audio = audio + data
@@ -60,11 +59,10 @@ async def recognize(websocket, path):
                 if metadata:
                     obj = rec.GetMetadata()
                     data = json.loads(obj)
-                    response = worker.process_metadata(data, nbrSpk)
+                    response = worker.process_metadata(data, audio)
                     await websocket.send(response)
                 break
         except Exception as e:
-            worker.log.error(e)
             break
 
 if __name__ == '__main__':

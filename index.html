@@ -69,7 +69,7 @@
             partial = document.querySelector('.partial'),
             text = document.querySelector('.text ul'),
             result = document.querySelector('.result'),
-            websocket = new WebSocket("ws://127.0.0.1:8887/");
+            websocket = new WebSocket("ws://127.0.0.1:8888/");
             result.style.visibility = "hidden";
         start.onclick = function (event) {
             navigator.getUserMedia({ audio: true }, initializeRecorder, function (a, b, c) {
@@ -84,7 +84,6 @@
         }
         websocket.onmessage = function (event) {
             data = JSON.parse(event.data);
-            console.log(data)
             if ('partial' in data) {
                 partial.textContent = data.partial;
             } else if ('text' in data && ! ('words' in data)) {
